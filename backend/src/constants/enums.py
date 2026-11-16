@@ -15,3 +15,11 @@ class NoteStatus(StrEnum):
 class Axis(StrEnum):
  ROW='row'
  COLUMN='column'
+class McStatus(StrEnum):
+ QUEUED='queued'
+ RUNNING='running'
+ PAUSED='paused'
+ SUCCEEDED='succeeded'
+ INDETERMINATE='indeterminate'
+ FAILED='failed'
+ STALE='stale'

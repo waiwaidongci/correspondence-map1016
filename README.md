@@ -28,13 +28,13 @@ docker compose exec -T backend python -m scripts.seed_demo
 3. 选择“秋季导览类别研究”、显示前2轴，提交真实Celery队列。
 4. worker计算标准化残差SVD，得到总惯量.408904、χ²368.014，图保留82.62%。
 5. 读取轴1/轴2贡献和cos²；策展同业显示质量约.127、地图路径约.068，不能只凭二维位置作解释。
-6. 核对期望最小24.75、df12及渐近p；再运行稀疏试采，看到零边际剔除和“不可靠”警示。
+6. 核对期望最小24.75、df12及渐近p；对稀疏表运行固定边际条件抽样，读取Monte Carlo p的99%区间与逐格BH-FDR判定，预算耗尽未达精度时明确“结论未定”。
 7. 从有效行/列类别建立解释，写明同行/同列轮廓与跨集距离边界，安排独立导览小样验证。
 8. 许禾以admin审阅解释；林叙以viewer下载获批CSV，带上点集、主坐标、显示质量、惯量保留与诊断边界。
 
 ## 实体、输入与页面
 
-五个核心实体ContingencyStudy、Category、CellCount、CorrespondenceRun、InterpretationNote贯穿表/model/schema/service/route/API/store/UI。六页为研究折页、列联计数、分析配置、坐标与诊断、解释审阅、研究留痕。CorrespondenceMap、InertiaSummary、RunTable跨页复用，另有Diagnostics及共享Table/Badge/Notice/Empty。
+五个核心实体ContingencyStudy、Category、CellCount、CorrespondenceRun、InterpretationNote贯穿表/model/schema/service/route/API/store/UI；条件抽样另设MonteCarloRun。七页为研究折页、列联计数、分析配置、坐标与诊断、条件抽样、解释审阅、研究留痕。CorrespondenceMap、InertiaSummary、RunTable跨页复用，另有Diagnostics、MonteCarlo及共享Table/Badge/Notice/Empty。
 
 导入2–12行×2–12列非负整数矩阵，每格≤1000000；行与列分别按code唯一，数据库cell(row_id,column_id)唯一且count≥0。未知维度、重复类别、负数、非整数、非有限、总量为零拒绝；最大总N144000000。每格校订是替换并审计，不把重复提交当追加。缺失格在内部表构造时规范为0，导入矩阵必须完整。分类标签是合成机构级汇总，不含个人身份数据。UI接受矩阵JSON与类别标签，不直接解析CSV。
 
@@ -48,7 +48,17 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 同行与同列分别具有完整χ²轮廓几何；截断图仅保留相应惯量。这里两集都使用主坐标，**行列两点之间的欧氏近距离不可直接作为可比较的偏好距离**。图不用于行列跨集距离推断；1轴配置时所有点只沿第一轴显示，纵向不放第二轴信息。低cos²点应回到完整坐标/计数阅读。
 
-`services/diagnostics.py`：E_ij=N r_i c_j，Pearson χ²=Σ(X−E)²/E，df=(R−1)(C−1)，渐近p由chi²生存函数。标准残差=(X−E)/√E；校正标准残差=(X−E)/√[E(1−r_i)(1−c_j)]。任一期望<1或超过20%期望<5时标渐近p不可靠，不作强显著结论；即使规则未触发，也依赖独立观察计数与适当抽样。逐格残差未作多重检验校正，只用作描述诊断；不自动解释为逐格显著。
+`services/diagnostics.py`：E_ij=N r_i c_j，Pearson χ²=Σ(X−E)²/E，df=(R−1)(C−1)，渐近p由chi²生存函数。标准残差=(X−E)/√E；校正标准残差=(X−E)/√[E(1−r_i)(1−c_j)]。任一期望<1或超过20%期望<5时标渐近p不可靠，不作强显著结论；即使规则未触发，也依赖独立观察计数与适当抽样。逐格残差未作多重检验校正，只用作描述诊断；不自动解释为逐格显著。逐格显著性判断改由条件抽样的BH-FDR结果给出（见下）。
+
+### 固定行列合计的条件抽样检验
+
+`services/mc_engine.py` + `services/mc_runs.py`：对零边际剔除后的活动表，用 `scipy.stats.random_table`（Patefield r×c 算法）在**固定行合计与列合计**下抽样，每张模拟表与观察表边际完全一致，因此稀疏表不再依赖渐近χ²近似。整体关联以模拟 Pearson χ² ≥ 观察 χ² 的比例作 Monte Carlo p（加一估计 (k+1)/(n+1)）；逐格以模拟 |校正标准残差| ≥ 观察值的比例作逐格 p，再对全表做 Benjamini–Hochberg 步进 FDR 校正（α=5%），控制整表错误发现率，避免把单个残差误读成显著偏好。每个 p 同时给 Wilson 99% 置信区间。
+
+**提前停止与误差保障**：以 Wilson 区间最差情况半宽（在 p≈.5 取最大）作为精度上界，达到用户目标 ε 且满足最少有效抽样量即提前停止；反复查看得到的都是带同一 99% 区间保障的当前估计。预算上限耗尽仍未达 ε 时状态置 `indeterminate`、结论明确写“未定”，只报告当前估计与实际区间，绝不伪造显著。固定边际下若条件分布退化为单一支撑表（有效表 r,c≥2 时实际不会发生，仍作防御）则记 `single_support_table` 且不作显著性结论。
+
+**确定性与续跑**：每批随机流仅由 `(seed, 批次号)` 经 `SeedSequence` 派生，与到达顺序无关。服务端用连续前缀合并器：乱序返回先入 `pending_batches` 待齐、重复投递（已合并或已在 pending）丢弃、停止后的晚到批次（序号 ≥ stop_index）一律不计入。因此并发分批、乱序、重复、中断续跑与“同种子顺序执行”得到**完全相同的停止位置与结论**。在途批次带时间戳，超过宽限期未回执会在下次调度时重投。worker 并发4、单检验在途上限2批。
+
+页面可配置种子、ε、最少/最大抽样量与单批大小，可暂停/恢复，并查看有效抽样量、在途/待合并批数、停止批次位置与判定依据。检验保存源数据指纹（活动表+类别元数据+算法版本）；单元格计数或类别名称校订会把相关检验置 `is_stale`（在跑的转为 `stale` 并停止调度，已终态的保留原状态仅标记失效），**历史结果与原对应图仍可查看**，但需基于新数据另建检验。审计记录 mc.queued/paused/resumed/stopped/failed。
 
 输入指纹覆盖研究id/name/filename/description、全部行列类别元数据、全部单元格的row/column/count、显示轴数、算法版本与容差，稳定排序；行序改变不改指纹，计数/标签/说明/显示轴改变会改。worker把完整SVD、惯量、主坐标、贡献、cos²、期望/残差、零边际与诊断存JSON和PG。有效行列不足、坏矩阵等记录failed，不伪造成功结果。
 
@@ -83,10 +93,10 @@ npm run dev
 
 结构为backend/src/{routes,controllers,services,models,schemas,middlewares,utils,constants,config}、backend/scripts/seed_demo.py、backend/migrations/和frontend/src/{api,stores,types,components/common,hooks,pages,router,utils,constants}。metadata首次建表，migrations记录结构，生产增量迁移需另行规划。请求ID和全局错误两个中间件；审计登录/导入/校订/运行/审阅；CSV公式前缀转义。
 
-共享枚举：backend/src/constants/enums.py中的Role/RunStatus/NoteStatus/Axis，frontend/src/constants/enums.ts对应角色/运行/解释/点集标签；用于鉴权、服务/schema、Badge/Layout/各页面。70个职责源文件，不计__init__及配置。源码不放截图、日志和测试报告；独立测试与真实截图在批次根test-artifacts/gb-0018，TESTING.md列实测与已知差异。
+共享枚举：backend/src/constants/enums.py中的Role/RunStatus/NoteStatus/Axis/McStatus，frontend/src/constants/enums.ts对应角色/运行/解释/点集/抽样状态标签；用于鉴权、服务/schema、Badge/Layout/各页面。metadata首次建表，migrations记录结构（002_monte_carlo.sql为条件抽样表），生产增量迁移需另行规划。请求ID和全局错误两个中间件；审计登录/导入/校订/运行/审阅/条件抽样；CSV公式前缀转义。源码不放截图、日志和测试报告；独立测试与真实截图在批次根test-artifacts/gb-0018，TESTING.md列实测与已知差异。
 
 ## 范围与License
 
-数据是合成汇总，不证明真实访客偏好或因果效果。稀疏渐近p不可靠，未提供精确检验/Monte Carlo替代；残差未作多格显著性控制。未做生产压测或外部导览验证。Google字体需联网，离线浏览器回退。收尾docker compose down -v --remove-orphans清理本栈演示卷。
+数据是合成汇总，不证明真实访客偏好或因果效果。稀疏渐近p不可靠时，改由固定边际条件 Monte Carlo 检验给出整体 p 与全表 BH-FDR 逐格判断；条件检验仍是关联层面的证据，不替代外部导览小样验证。未做生产压测。Google字体需联网，离线浏览器回退。收尾docker compose down -v --remove-orphans清理本栈演示卷。
 
 MIT，见LICENSE。

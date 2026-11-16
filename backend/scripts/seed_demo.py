@@ -1,4 +1,5 @@
 import json
+import numpy as np
 from sqlalchemy import select,func
 from src.config.database import Base,engine,SessionLocal
 from src.models import *
@@ -6,6 +7,8 @@ from src.utils.security import hash_password
 from src.services.catalog import table_data
 from src.services.ca import correspondence
 from src.services.fingerprint import fingerprint
+from src.services import mc_engine
+from src.services.mc_fingerprint import mc_fingerprint
 
 def seed():
  Base.metadata.create_all(engine)
@@ -28,5 +31,21 @@ def seed():
    db.commit()
   if not db.scalar(select(CorrespondenceRun).where(CorrespondenceRun.name=='秋季导览结构初稿')):
    study=db.scalar(select(ContingencyStudy).where(ContingencyStudy.name==scenarios[0][0]));meta,rows,cols,cells,table=table_data(db,study.id);result=correspondence(table,rows,cols,2);result['fingerprint']=fingerprint(meta,rows,cols,cells,2);admin=db.scalar(select(User).where(User.role=='admin'));run=CorrespondenceRun(study_id=study.id,name='秋季导览结构初稿',axes=2,status='succeeded',result=result,creator_id=admin.id);db.add(run);db.flush();db.add(InterpretationNote(run_id=run.id,name='行轮廓结构与导览小样草案',category_ids=[p['id'] for p in result['row_points'][:2]],interpretation='先读取同行轮廓与显示质量，不把行列两点间接近当成直接偏好距离。',next_step='保留完整惯量和期望计数诊断，再做独立导览小样试验。',creator_id=admin.id));db.add(AuditLog(actor='seed',action='demo.created',detail={'total_counts':1806,'tables':3}));db.commit()
-  counts={t.__tablename__:db.scalar(select(func.count()).select_from(t)) for t in [User,ContingencyStudy,Category,CellCount,CorrespondenceRun,InterpretationNote]};print(json.dumps(counts));return counts
+  if not db.scalar(select(MonteCarloRun).where(MonteCarloRun.name=='秋季导览固定边际检验')):
+   study=db.scalar(select(ContingencyStudy).where(ContingencyStudy.name==scenarios[0][0]));meta,rows,cols,cells,table=table_data(db,study.id)
+   A,keep_r,keep_c,n=mc_engine.active_table(table);active_rows=[rows[i] for i in range(len(rows)) if keep_r[i]];active_cols=[cols[j] for j in range(len(cols)) if keep_c[j]]
+   fp=mc_fingerprint(meta,active_rows,active_cols,A.tolist());admin=db.scalar(select(User).where(User.role=='admin'))
+   epsilon=0.02;max_draws=6000;batch=500;seed=20261116
+   ledger={'draws':0,'overall_extreme':0,'cell_extreme':[[0]*A.shape[1] for _ in range(A.shape[0])],'next_index':0,'distinct_tables':None,'degenerate':False}
+   index=0
+   while ledger['draws']<max_draws:
+    size=min(batch,max_draws-index*batch);o,c,u=mc_engine.simulate_batch(A,index,seed,size)
+    ledger['overall_extreme']+=o;ledger['cell_extreme']=(np.asarray(ledger['cell_extreme'])+c).tolist();ledger['draws']+=size
+    ledger['distinct_tables']=u if ledger['distinct_tables'] is None else min(ledger['distinct_tables'],u);ledger['next_index']=index+1;index+=1
+    if mc_engine.meets_requirements(ledger['draws'],epsilon,100) or ledger['draws']>=max_draws:break
+   inference=mc_engine.build_inference(ledger,A,epsilon,max_draws,100);inference['applied_batches']=ledger['next_index'];inference['distinct_tables']=ledger['distinct_tables']
+   inference['row_categories']=[{k:r[k] for k in ('id','code','label')} for r in active_rows];inference['column_categories']=[{k:c[k] for k in ('id','code','label')} for c in active_cols]
+   mc=MonteCarloRun(study_id=study.id,name='秋季导览固定边际检验',seed=seed,epsilon=epsilon,min_draws=100,max_draws=max_draws,batch_size=batch,status=inference['decision'],result=inference,source_fingerprint=fp,ledger=ledger,pending_batches={},in_flight={},stop_index=ledger['next_index'],creator_id=admin.id);db.add(mc)
+   db.commit()
+  counts={t.__tablename__:db.scalar(select(func.count()).select_from(t)) for t in [User,ContingencyStudy,Category,CellCount,CorrespondenceRun,InterpretationNote,MonteCarloRun]};print(json.dumps(counts));return counts
 if __name__=='__main__':seed()

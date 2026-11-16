@@ -31,8 +31,14 @@ def create_study(db,data,user):
 def patch_category(db,id,data,user):
  obj=db.get(Category,id)
  if not obj:raise HTTPException(404,'类别不存在')
- obj.label=data.label;db.commit();record(db,user.email,'category.label',{'category_id':id});return row(obj)
+ obj.label=data.label;db.commit();record(db,user.email,'category.label',{'category_id':id})
+ from .mc_runs import invalidate_study
+ invalidate_study(db,obj.study_id,'类别元数据已校订：条件抽样源指纹改变，检验失效')
+ return row(obj)
 def patch_cell(db,id,data,user):
  obj=db.get(CellCount,id)
  if not obj:raise HTTPException(404,'单元格不存在')
- obj.count=data.count;db.commit();record(db,user.email,'cell.count',{'cell_id':id,'count':obj.count});return row(obj)
+ obj.count=data.count;db.commit();record(db,user.email,'cell.count',{'cell_id':id,'count':obj.count})
+ from .mc_runs import invalidate_study
+ invalidate_study(db,obj.study_id,'单元格计数已校订：条件抽样源指纹改变，检验失效')
+ return row(obj)
